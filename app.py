@@ -4,8 +4,9 @@ from flask_sqlalchemy import SQLAlchemy
 from celery import Celery
 import uuid
 import csv
-
+import time
 import json
+import numpy as np
 
 app = Flask(__name__)
 DATA_DIRECTORY = 'data'
@@ -32,13 +33,6 @@ class Sample(db.Model):
     def __repr__(self):
         return f'{self.id}, {type(self.id)}'
 
-# class Sample(db.Model):
-#     id = db.Column(db.Uuid(), primary_key=True)
-#     scattering_fp = db.Column(db.String(100), nullable=True)
-#     teos_vf = db.Column(db.Float(), unique=False, nullable=False)
-
-#    def __repr__(self):
-#         return f'{self.id}, {type(self.id)}'
 
 # Route to create the database
 with app.app_context():
@@ -97,7 +91,9 @@ def get_sample():
     """
     print('gettingsample')
     # Get all columns from the Sample model
-    sample = Sample.query.with_entities(*Sample.__table__.columns).all()
+    
+    uuid_val = request.json.get('uuid')
+    sample = Sample.query.with_entities(*Sample.__table__.columns).filter(Sample.id == uuid_val).all()
     
 
     print(sample, len(sample), type(sample))
@@ -147,104 +143,140 @@ def dump_to_csv():
         return jsonify({"error": f"Failed to export database: {str(e)}"}), 500
  
 
+# Configure Celery
+celery = Celery('app', broker='redis://localhost:6379/0')
+celery.conf.update(
+    broker_url='redis://localhost:6379/0',
+    result_backend='redis://localhost:6379/0'
+)
+
+@celery.task(name='app.process_data_task')
+def process_data_task():
+    """
+    Celery task to run data processing asynchronously
+    """
+    try:
+        # Get all unprocessed samples from database
+        with app.app_context():  # Need this to work with Flask SQLAlchemy
+            unprocessed_samples = db.session.query(Sample).filter(Sample.status == 'unprocessed').all()
+            
+            if not unprocessed_samples:
+                return {"message": "No unprocessed samples found"}
+
+            # Convert Sample objects to dictionaries
+            sample = []
+            for s in unprocessed_samples:
+                sample_dict = {}
+                for column in Sample.__table__.columns:
+                    sample_dict[column.name] = getattr(s, column.name)
+                sample.append(sample_dict)
+
+            print(sample)
+
+            for samp in sample:
+                print(f'Processing sample {samp["id"]}')
+                time.sleep(20)
+                ap_distance = 42
+
+                # Update sample in database with ap_distance and mark as processed
+                db.session.query(Sample).filter(Sample.id == samp["id"]).update({
+                    "ap_distance": ap_distance,
+                    "status": "processed"
+                })
+                db.session.commit()
+
+            return {"message": "Processing completed successfully"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.route('/process_data', methods=['GET'])
 def process_data():
     """
-    Run data processing pipeline on unprocessed data
-    """ 
-    # Get all unprocessed samples from database
-    # Get all unprocessed samples with full row data
-    unprocessed_samples = db.session.query(Sample).filter(Sample.status == 'unprocessed').all()
-    #sample = Sample.query.with_entities(*Sample.__table__.columns).all()
+    Trigger asynchronous data processing pipeline
+    """
+    # Start the Celery task
+    task = process_data_task.delay()
     
-    if not unprocessed_samples:
-        return {"message": "No unprocessed samples found"}
+    return jsonify({
+        "message": "Data processing started",
+        "task_id": task.id
+    })
 
-
-    # Convert Sample objects to dictionaries
-    sample = []
-    for s in unprocessed_samples:
-        sample_dict = {}
-        for column in Sample.__table__.columns:
-            sample_dict[column.name] = getattr(s, column.name)
-        sample.append(sample_dict)
-
-
-    print(sample)
-
-
-    for samp in sample:
-        print(f'Processing sample {samp["id"]}')
-
-        ap_distance = 42
-
-        # Update sample in database with ap_distance and mark as processed
-        db.session.query(Sample).filter(Sample.id == samp["id"]).update({
-            "ap_distance": ap_distance,
-            "status": "processed"
+@app.route('/task_status/<task_id>')
+def task_status(task_id):
+    """
+    Get the status of a processing task
+    """
+    task = process_data_task.AsyncResult(task_id)
+    if task.ready():
+        return jsonify({
+            "status": "completed",
+            "result": task.get()
         })
+    return jsonify({
+        "status": "processing"
+    })
+
+@app.route('/propose_new_candidates', methods=['GET'])
+def propose_new_candidates():
+    """
+    Propose new candidates for processing
+    """
+    # Get all samples with status 'processed'
+    task = propose_new_candidates_task.delay()
+
+    return jsonify({
+        "message": "New candidates proposed",
+        "task_id": task.id
+    })
+
+
+@celery.task(name='app.propose_new_candidates_task')
+def propose_new_candidates_task():
+    """
+    Celery task to propose new candidates for processing
+    """
+    teos_vf = np.random.random()
+    uuid_val = uuid.uuid4()
+
+    status = 'proposed'
+
+
+    # Create new sample with proposed parameters
+    sample = Sample(
+        id=str(uuid_val),
+        teos_vf=teos_vf,
+        status=status
+    )
+
+    # Add to database
+    with app.app_context():
+        db.session.add(sample)
         db.session.commit()
 
-
-    return 'processed data'
-
-
-
-
-
-# # Configure Celery
-# celery = Celery('tasks', broker='redis://localhost:6379/0')
-
-# @celery.task
-# def process_data_task():
-#     """
-#     Celery task to run data processing asynchronously
-#     """
-#     try:
-#         process_data()
-#         return {"status": "success"}
-#     except Exception as e:
-#         return {"status": "error", "message": str(e)}
-
-# @app.route('/trigger_processing', methods=['POST'])
-# def trigger_processing():
-#     """
-#     Endpoint to trigger asynchronous data processing
-#     """
-#     # Start the Celery task
-#     task = process_data_task.delay()
+    return {
+        "message": "New candidate proposed",
+        "uuid": str(uuid_val),
+        "teos_vf": teos_vf
+    }
     
-#     return jsonify({
-#         "message": "Data processing started",
-#         "task_id": task.id
-#     })
 
-# @app.route('/task_status/<task_id>')
-# def task_status(task_id):
-#     """
-#     Get the status of a processing task
-#     """
-#     task = process_data_task.AsyncResult(task_id)
-#     if task.ready():
-#         return jsonify({
-#             "status": "completed",
-#             "result": task.get()
-#         })
-#     return jsonify({
-#         "status": "processing"
-#     })
+@app.route('/get_proposed_candidates', methods=['GET'])
+def get_proposed_candidates():
+    """
+    Get proposed candidates from database
+    """
+    candidates = Sample.query.filter(Sample.status == 'proposed').all()
 
+    
+    candidate_list = []
+    for s in candidates:
+        candidate_dict = {}
+        for column in Sample.__table__.columns:
+            candidate_dict[column.name] = getattr(s, column.name)
+        candidate_list.append(candidate_dict)
+    return jsonify(candidate_list)
 
-# @app.route('/most_recent_candidate', methods=['GET'])
-# def most_recent_candidate():
-#     """
-#     Get the most recent candidate proposed by model
-#     """
-#     # load master csv file
-
-#     # get candidates with status 'proposed'
-
-#     # return proposed candidates, ranked by earliest to latest 
 
 if __name__ == '__main__':
     app.run(debug=True) 
