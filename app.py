@@ -27,6 +27,12 @@ class Sample(db.Model):
     id = db.Column(db.String(36), primary_key=True)
     scattering_fp = db.Column(db.String(100), nullable=True) 
     teos_vf = db.Column(db.Float(), unique=False, nullable=False)
+    ammonia_vf = db.Column(db.Float(), unique=False, nullable=False)
+    ethanol_vf = db.Column(db.Float(), unique=False, nullable=False)
+    water_vf = db.Column(db.Float(), unique=False, nullable=False)
+    ctab_mass = db.Column(db.Float(), unique=False, nullable=False)
+    f127_mass = db.Column(db.Float(), unique=False, nullable=False)
+    sample_order = db.Column(db.Integer, unique=True, nullable=False)
     status = db.Column(db.String(20), default='unprocessed')
     ap_distance = db.Column(db.Float(), unique=False, nullable=True, default=None)
 
@@ -66,23 +72,71 @@ def update_data():
         file_path = os.path.join(app.config['DATA_DIRECTORY'], file.filename)
         file.save(file_path)
 
-        # Add sample information to the database
-        print('uuid string: ', data['uuid'], type(data['uuid']))
-        print('UUID: ', uuid.UUID(data['uuid']))
-        sample = Sample(
-            id=data['uuid'],
-            scattering_fp=file_path,
-            teos_vf=data['teos_vf']
-        )
-        print(sample)
+        # Update existing sample if it exists
+        existing_sample = Sample.query.filter_by(id=data['uuid']).first()
+        if existing_sample:
+            # Update each field that exists in the data
+            for key, value in data.items():
+                if hasattr(existing_sample, key):
+                    setattr(existing_sample, key, value)
+            if file_path:
+                existing_sample.scattering_fp = file_path
+            db.session.commit()
+            return jsonify({
+                "message": "Sample updated successfully",
+                "file_path": file_path,
+                "data": data
+            })
 
-        db.session.add(sample)
-        db.session.commit()
-        return jsonify({
-            "message": "File uploaded successfully",
-            "file_path": file_path,
-            "data": data
-        })
+        else:
+            # Get the maximum sample_order value
+            max_order = db.session.query(db.func.max(Sample.sample_order)).scalar()
+            next_order = 1 if max_order is None else max_order + 1
+
+            # Create a new sample
+            sample = Sample(
+                id=data['uuid'],
+                scattering_fp=file_path,
+                teos_vf=data.get('teos_vf'),
+                ammonia_vf=data['ammonia_vf'], 
+                ethanol_vf=data['ethanol_vf'],
+                water_vf=data['water_vf'],
+                ctab_mass=data['ctab_mass'],
+                f127_mass=data['f127_mass'],
+                sample_order=next_order
+            )
+            
+            db.session.add(sample)
+            db.session.commit()
+            
+            return jsonify({
+                "message": "Sample created successfully",
+                "file_path": file_path,
+                "data": data
+            })
+        # Add sample information to the database
+        # print('uuid string: ', data['uuid'], type(data['uuid']))
+        # print('UUID: ', uuid.UUID(data['uuid']))
+        # sample = Sample(
+        #     id=data['uuid'],
+        #     scattering_fp=file_path,
+        #     teos_vf=data.get['teos_vf'],
+        #     ammonia_vf=data['ammonia_vf'],
+        #     ethanol_vf=data['ethanol_vf'],
+        #     water_vf=data['water_vf'],
+        #     ctab_mass=data['ctab_mass'],
+        #     f127_mass=data['f127_mass'],
+        #     sample_order=data['sample_order']
+        # # )
+        # print(sample)
+
+        # db.session.add(sample)
+        # # db.session.commit()
+        # return jsonify({
+        #     "message": "File uploaded successfully",
+        #     "file_path": file_path,
+        #     "data": data
+        # })
 
 @app.route('/get_sample', methods=['POST'])
 def get_sample():
@@ -237,6 +291,12 @@ def propose_new_candidates_task():
     Celery task to propose new candidates for processing
     """
     teos_vf = np.random.random()
+    ammonia_vf = np.random.random()
+    ethanol_vf = np.random.random()
+    water_vf = np.random.random()
+    ctab_mass = np.random.random()
+    f127_mass = np.random.random()
+
     uuid_val = uuid.uuid4()
 
     status = 'proposed'
@@ -246,6 +306,11 @@ def propose_new_candidates_task():
     sample = Sample(
         id=str(uuid_val),
         teos_vf=teos_vf,
+        ammonia_vf=ammonia_vf,
+        ethanol_vf=ethanol_vf,
+        water_vf=water_vf,
+        ctab_mass=ctab_mass,
+        f127_mass=f127_mass,
         status=status
     )
 
