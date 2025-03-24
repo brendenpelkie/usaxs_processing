@@ -8,6 +8,8 @@ import time
 import json
 import numpy as np
 
+from saxs_data_processing import io, manipulate, target_comparison, subtract, sasview_fitting
+
 app = Flask(__name__)
 DATA_DIRECTORY = 'data'
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
@@ -17,6 +19,7 @@ app.config['DATA_DIRECTORY'] = DATA_DIRECTORY
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['PROCESSING_CONFIG_FP'] = '/mnt/c/Users/bgpelkie/Code/silica-np-synthesis/APS/systemconfig.json'
 
 # Initialize the database
 db = SQLAlchemy(app)
@@ -44,6 +47,38 @@ class Sample(db.Model):
 with app.app_context():
     db.create_all()
 
+def create_sample(data, file_path=None):
+    """
+    Create a new sample in the database with auto-incrementing sample_order
+    
+    Args:
+        data (dict): Dictionary containing sample data
+        file_path (str, optional): Path to the scattering data file
+        
+    Returns:
+        Sample: The newly created sample object
+    """
+    # Get the maximum sample_order value
+    max_order = db.session.query(db.func.max(Sample.sample_order)).scalar()
+    next_order = 1 if max_order is None else max_order + 1
+
+    # Create a new sample
+    sample = Sample(
+        id=data['uuid'],
+        scattering_fp=file_path,
+        teos_vf=data.get('teos_vf'),
+        ammonia_vf=data['ammonia_vf'], 
+        ethanol_vf=data['ethanol_vf'],
+        water_vf=data['water_vf'],
+        ctab_mass=data['ctab_mass'],
+        f127_mass=data['f127_mass'],
+        sample_order=next_order,
+        status=data.get('status', 'proposed')
+    )
+    
+    db.session.add(sample)
+    db.session.commit()
+    return sample
 
 @app.route('/update_data', methods=['POST'])
 def update_data():
@@ -89,54 +124,13 @@ def update_data():
             })
 
         else:
-            # Get the maximum sample_order value
-            max_order = db.session.query(db.func.max(Sample.sample_order)).scalar()
-            next_order = 1 if max_order is None else max_order + 1
-
             # Create a new sample
-            sample = Sample(
-                id=data['uuid'],
-                scattering_fp=file_path,
-                teos_vf=data.get('teos_vf'),
-                ammonia_vf=data['ammonia_vf'], 
-                ethanol_vf=data['ethanol_vf'],
-                water_vf=data['water_vf'],
-                ctab_mass=data['ctab_mass'],
-                f127_mass=data['f127_mass'],
-                sample_order=next_order
-            )
-            
-            db.session.add(sample)
-            db.session.commit()
-            
+            sample = create_sample(data, file_path)
             return jsonify({
                 "message": "Sample created successfully",
                 "file_path": file_path,
                 "data": data
             })
-        # Add sample information to the database
-        # print('uuid string: ', data['uuid'], type(data['uuid']))
-        # print('UUID: ', uuid.UUID(data['uuid']))
-        # sample = Sample(
-        #     id=data['uuid'],
-        #     scattering_fp=file_path,
-        #     teos_vf=data.get['teos_vf'],
-        #     ammonia_vf=data['ammonia_vf'],
-        #     ethanol_vf=data['ethanol_vf'],
-        #     water_vf=data['water_vf'],
-        #     ctab_mass=data['ctab_mass'],
-        #     f127_mass=data['f127_mass'],
-        #     sample_order=data['sample_order']
-        # # )
-        # print(sample)
-
-        # db.session.add(sample)
-        # # db.session.commit()
-        # return jsonify({
-        #     "message": "File uploaded successfully",
-        #     "file_path": file_path,
-        #     "data": data
-        # })
 
 @app.route('/get_sample', methods=['POST'])
 def get_sample():
@@ -243,6 +237,89 @@ def process_data_task():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+def process_data_pipeline(sample):
+    """
+    Function to do the actual SAXS data processing and amplitude phase distance calculation
+    """
+
+    # get all the constants from config
+
+    with open(app.config['PROCESSING_CONFIG_FP'], 'r') as f:
+        config = json.load(f)
+
+    config = config['processing_constants']
+        
+    q_min_subtract = config['q_min_subtract']
+    q_max_subtract = config['q_max_subtract'] 
+    q_min_spl = config['q_min_spl']
+    n_interpolate_gridpts = config['n_interpolate_gridpts']
+    q_split_hilo = config['q_split_hilo']
+    target_r_nm = config['target_r_nm']
+    target_pdi = config['target_pdi']
+    sld_silica = config['sld_silica']
+    sld_ethanol = config['sld_ethanol']
+    savgol_n = config['savgol_n']
+    savgol_order = config['savgol_order']
+    min_data_len = config['min_data_len']
+    spline_s = config['spline_s']
+    spline_k = config['spline_k']
+    scale_n_avg = config['scale_n_avg']
+    apdist_optim = config['apdist_optim']
+    apdist_grid_dim = config['apdist_grid_dim']
+
+    target_r_angs = target_r_nm * 10
+
+
+    # calculate target scattering profile 
+    q_grid = np.linspace(np.log10(q_min_spl), np.log10(q_split_hilo), n_interpolate_gridpts)
+
+    q_grid_nonlog = 10**q_grid
+    target_I = target_comparison.target_intensities(q_grid_nonlog, target_r_angs, target_pdi, sld_silica, sld_ethanol)
+    target_I = np.log10(target_I)
+
+    # load data from disk
+    data_fp = sample['scattering_fp']
+    background_fp = sample['background_fp']
+
+    data = io.read_1D_data(data_fp)
+    background = io.read_1D_data(background_fp)
+
+
+
+
+    # background subtraction
+    subtracted = subtract.chop_subtract(data[0], background[0], hiq_thresh=1)
+    subtracted = subtracted[subtracted['q'] < q_max_subtract]
+    subtracted = subtracted[~subtracted['I'].isna()]
+    subtracted = subtracted[subtracted['I'] > 0] # drop negative values 
+
+    # split hi and lo q
+    subtracted_loq = subtracted[subtracted['q'] < q_split_hilo]
+    subtracted_hiq = subtracted[subtracted['q'] > q_split_hilo]
+
+    # lo-q apdist fitting pipeline
+    q_log = np.log10(subtracted_loq['q'].to_numpy())
+    I_log = np.log10(subtracted_loq['I'].to_numpy())
+
+    I_savgol = manipulate.denoise_intensity(I_log, savgol_n = savgol_n, savgol_order = savgol_order)
+    I_spline = manipulate.fit_interpolate_spline(q_log, I_savgol, q_grid, s = spline_s, k = spline_k)
+
+    # scale onto target 
+    I_scaled = manipulate.scale_intensity_highqavg(I_spline, target_I, n_avg = scale_n_avg)
+
+
+    # amplitude phase distance calculation
+    amplitude, phase = target_comparison.ap_distance(q_grid, I_scaled, target_I, optim = apdist_optim, grid_dim = apdist_grid_dim)
+
+    # integrate hi-q data
+    hiq_peak = np.trapezoid(subtracted_hiq['I'], x = subtracted_hiq['q'])
+
+
+    return amplitude, phase, hiq_peak
+
+
+
 @app.route('/process_data', methods=['GET'])
 def process_data():
     """
@@ -290,39 +367,27 @@ def propose_new_candidates_task():
     """
     Celery task to propose new candidates for processing
     """
-    teos_vf = np.random.random()
-    ammonia_vf = np.random.random()
-    ethanol_vf = np.random.random()
-    water_vf = np.random.random()
-    ctab_mass = np.random.random()
-    f127_mass = np.random.random()
-
-    uuid_val = uuid.uuid4()
-
-    status = 'proposed'
-
+    # Generate random parameters
+    data = {
+        'uuid': str(uuid.uuid4()),
+        'teos_vf': np.random.random(),
+        'ammonia_vf': np.random.random(),
+        'ethanol_vf': np.random.random(),
+        'water_vf': np.random.random(),
+        'ctab_mass': np.random.random(),
+        'f127_mass': np.random.random(),
+        'status': 'proposed'
+    }
 
     # Create new sample with proposed parameters
-    sample = Sample(
-        id=str(uuid_val),
-        teos_vf=teos_vf,
-        ammonia_vf=ammonia_vf,
-        ethanol_vf=ethanol_vf,
-        water_vf=water_vf,
-        ctab_mass=ctab_mass,
-        f127_mass=f127_mass,
-        status=status
-    )
-
-    # Add to database
     with app.app_context():
-        db.session.add(sample)
-        db.session.commit()
+        sample = create_sample(data)
+
 
     return {
         "message": "New candidate proposed",
-        "uuid": str(uuid_val),
-        "teos_vf": teos_vf
+        "uuid": data['uuid'],
+        "teos_vf": data['teos_vf']
     }
     
 
