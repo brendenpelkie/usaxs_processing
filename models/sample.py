@@ -1,4 +1,5 @@
 from flask_sqlalchemy import SQLAlchemy
+from flask import current_app
 
 db = SQLAlchemy()
 
@@ -27,7 +28,8 @@ def create_sample(data, scattering_fp=None, background_fp=None):
     
     Args:
         data (dict): Dictionary containing sample data
-        file_path (str, optional): Path to the scattering data file
+        scattering_fp (str, optional): Path to the scattering data file
+        background_fp (str, optional): Path to the background data file
         
     Returns:
         Sample: The newly created sample object
@@ -48,15 +50,14 @@ def create_sample(data, scattering_fp=None, background_fp=None):
         sample_order=next_order
     )
 
-    # Add any additional attributes from data that match model columns
+    # Assign any additional entries from data dict to sample
     for key, value in data.items():
-        if hasattr(Sample, key) and key not in ['uuid', 'teos_vf', 'ammonia_vf', 'ethanol_vf', 'water_vf', 'ctab_mass', 'f127_mass']:
+        if hasattr(sample, key) and key not in ['uuid', 'teos_vf', 'ammonia_vf', 'ethanol_vf', 'water_vf', 'ctab_mass', 'f127_mass']:
             setattr(sample, key, value)
-
-    # Set file path if provided
+    
+    # Set file paths if provided
     if scattering_fp:
         sample.scattering_fp = scattering_fp
-    
     if background_fp:
         sample.background_fp = background_fp
     

@@ -6,12 +6,13 @@ import json
 
 from models.sample import db, Sample, create_sample
 from processing.data_processor import process_samples
-from processing.candidate_generator import generate_candidate
+from processing.candidate_generator import generate_candidate, sobol_sample
 
 app = Flask(__name__)
 DATA_DIRECTORY = 'data'
 BACKGROUND_DIRECTORY = 'background'
-PROCESSING_CONFIG_FP = '~/silica-np-synthesis/APS/systemconfig.json'
+PROCESSING_CONFIG_FP = '/home/bgpelkie/Code/silica-np-synthesis/APS/systemconfig.json'
+EXPERIMENT_CONSTANTS_FP = '/home/bgpelkie/Code/silica-np-synthesis/APS/Mesoporous_constants_APS.json'
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
 os.makedirs(BACKGROUND_DIRECTORY, exist_ok=True)
 app.config['DATA_DIRECTORY'] = DATA_DIRECTORY
@@ -19,7 +20,7 @@ app.config['BACKGROUND_DIRECTORY'] = BACKGROUND_DIRECTORY
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['PROCESSING_CONFIG_FP'] = PROCESSING_CONFIG_FP
-
+app.config['EXPERIMENT_CONSTANTS_FP'] = EXPERIMENT_CONSTANTS_FP
 import logging
 
 
@@ -100,7 +101,7 @@ def update_data():
 
     else:
         # Create a new sample
-        sample = create_sample(data, data_path, background_path)
+        sample = create_sample(data, scattering_fp=data_path)
         return jsonify({
             "message": "Sample created successfully",
             "file_path": data_path,
@@ -242,6 +243,16 @@ def get_proposed_candidates():
             candidate_dict[column.name] = getattr(s, column.name)
         candidate_list.append(candidate_dict)
     return jsonify(candidate_list)
+
+
+@app.route('/generate_sobol_baseline', methods=['GET'])
+def generate_sobol_baseline():
+    """
+    Generate sobol baseline samples
+    """
+    with app.app_context():
+        sobol_sample(m_samples=5, seed=42)  # Generate 10 samples with seed 42
+        return jsonify({'message': 'Sobol baseline samples generated'})
 
 if __name__ == '__main__':
     app.run(debug=True) 
