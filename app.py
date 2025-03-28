@@ -9,10 +9,10 @@ from processing.data_processor import process_samples
 from processing.candidate_generator import generate_candidate, sobol_sample
 
 app = Flask(__name__)
-DATA_DIRECTORY = 'data'
-BACKGROUND_DIRECTORY = 'background'
-PROCESSING_CONFIG_FP = '/home/bgpelkie/Code/silica-np-synthesis/APS/systemconfig.json'
-EXPERIMENT_CONSTANTS_FP = '/home/bgpelkie/Code/silica-np-synthesis/APS/Mesoporous_constants_APS.json'
+DATA_DIRECTORY = '/home/ubuntu/usaxs_data'
+BACKGROUND_DIRECTORY = '/home/ubuntu/usaxs_data'
+PROCESSING_CONFIG_FP = '/home/ubuntu/Code/silica-np-synthesis/APS/systemconfig.json'
+EXPERIMENT_CONSTANTS_FP = '/home/ubuntu/Code/silica-np-synthesis/APS/Mesoporous_constants_APS.json'
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
 os.makedirs(BACKGROUND_DIRECTORY, exist_ok=True)
 app.config['DATA_DIRECTORY'] = DATA_DIRECTORY
@@ -262,9 +262,10 @@ def check_usaxs_status():
     data = request.json
 
     sample_uuid = data['id']
-
+    logger.info('looking for data file in ', app.config['DATA_DIRECTORY'])
     # Get list of files in data directory
     data_files = os.listdir(app.config['DATA_DIRECTORY'])
+
     
     # Check if sample_uuid appears in any filenames
     sample_found = any(sample_uuid in filename for filename in data_files)
@@ -275,7 +276,7 @@ def check_usaxs_status():
     else:
         usaxs_status = 'incomplete'
 
-    return jsonify({'usaxs_status': usaxs_status})
+    return jsonify({'usaxs_status': usaxs_status, 'data_files': data_files})
 
 if __name__ == '__main__':
     app.run(debug=True) 
