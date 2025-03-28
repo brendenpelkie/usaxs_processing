@@ -254,5 +254,28 @@ def generate_sobol_baseline():
         sobol_sample(m_samples=5, seed=42)  # Generate 10 samples with seed 42
         return jsonify({'message': 'Sobol baseline samples generated'})
 
+@app.route('/check_usaxs_status', methods = ['POST'])
+def check_usaxs_status():
+    """
+    Check the status of the USAXS data
+    """
+    data = request.json
+
+    sample_uuid = data['id']
+
+    # Get list of files in data directory
+    data_files = os.listdir(app.config['DATA_DIRECTORY'])
+    
+    # Check if sample_uuid appears in any filenames
+    sample_found = any(sample_uuid in filename for filename in data_files)
+    
+
+    if sample_found:
+        usaxs_status = 'complete'
+    else:
+        usaxs_status = 'incomplete'
+
+    return jsonify({'usaxs_status': usaxs_status})
+
 if __name__ == '__main__':
     app.run(debug=True) 
